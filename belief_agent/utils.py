@@ -1,5 +1,3 @@
-"""Utility functions for formatting, prompt construction, and serialization."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -8,24 +6,6 @@ from .belief_state import BeliefState
 
 
 def format_beliefs_bullet_points(state: BeliefState) -> str:
-    """Render beliefs as a bullet-point list for inclusion in prompts.
-
-    Parameters
-    ----------
-    state:
-        The belief state to format.
-
-    Returns
-    -------
-    A plain-text bullet list.
-
-    Examples
-    --------
-    >>> bs = BeliefState()
-    >>> bs.add_belief("The user prefers Python", confidence=0.9, source="chat")
-    >>> print(format_beliefs_bullet_points(bs))
-    - [90%] The user prefers Python (source: chat)
-    """
     if not state.beliefs:
         return "(no beliefs recorded)"
     lines = ["Current beliefs:"]
@@ -40,12 +20,10 @@ def format_beliefs_bullet_points(state: BeliefState) -> str:
 
 
 def format_beliefs_json(state: BeliefState, indent: int = 2) -> str:
-    """Render beliefs as a JSON string."""
     return state.serialize(indent=indent)
 
 
 def format_beliefs_natural(state: BeliefState) -> str:
-    """Render beliefs in a natural-language paragraph."""
     if not state.beliefs:
         return "I have no recorded beliefs yet."
     parts: list[str] = []
@@ -67,19 +45,6 @@ def format_beliefs_for_system_prompt(
     state: BeliefState,
     style: str = "bullet",
 ) -> str:
-    """Format beliefs into a section suitable for a system prompt.
-
-    Parameters
-    ----------
-    state:
-        The belief state to inject.
-    style:
-        One of ``"bullet"``, ``"json"``, or ``"natural"``.
-
-    Returns
-    -------
-    A formatted string.
-    """
     fmt = {"bullet": format_beliefs_bullet_points, "json": format_beliefs_json, "natural": format_beliefs_natural}
     fn = fmt.get(style)
     if fn is None:
@@ -107,21 +72,6 @@ def build_system_prompt(
     style: str = "bullet",
     extra_instructions: str = "",
 ) -> str:
-    """Build a complete system prompt that includes the current belief state.
-
-    Parameters
-    ----------
-    state:
-        Belief state to inject.
-    style:
-        Formatting style for beliefs.
-    extra_instructions:
-        Additional instructions appended before the closing guidelines.
-
-    Returns
-    -------
-    A ready-to-use system prompt string.
-    """
     beliefs_section = format_beliefs_for_system_prompt(state, style=style)
     prompt = SYSTEM_PROMPT_CORE.format(beliefs_section=beliefs_section)
     if extra_instructions:

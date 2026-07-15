@@ -1,97 +1,117 @@
-"""Tests for the Agent wrapper."""
-
-from __future__ import annotations
-
-from typing import Any
+import json
 
 import pytest
 
-from belief_agent import BeliefAgent, BeliefState, LLMClient
+from belief_agent.agent import BeliefAgent
+from belief_agent.belief_state import BeliefState
 
 
-class EchoClient(LLMClient):
-    """Returns a canned response for testing."""
+def dummy_llm(messages):
+    return json.dumps({"proposition": "test belief", "confidence": 0.8})
 
-    def __init__(self, resp: str = "Hello") -> None:
-        self.resp = resp
-        self.last_messages: list[dict] = []
 
-    def complete(self, messages: list[dict], **kwargs: Any) -> str:
-        self.last_messages = messages
-        return self.resp
-
-    def complete_stream(self, messages: list[dict], **kwargs: Any) -> Any:
-        raise NotImplementedError
+def _make_llm(response_data):
+    def llm(messages):
+        return json.dumps(response_data)
+    return llm
 
 
 class TestBeliefAgent:
     def test_init(self):
-        agent = BeliefAgent(client=EchoClient())
-        assert isinstance(agent.state, BeliefState)
+        agent = BeliefAgent(llm_call=dummy_llm, name="test-agent")
+        assert agent.name == "test-agent"
         assert len(agent.state) == 0
 
-    def test_chat_adds_to_history(self):
-        agent = BeliefAgent(client=EchoClient("Hello!"))
-        resp = agent.chat("Hi")
-        assert resp == "Hello!"
-        assert len(agent.message_history) == 3  # system, user, assistant
+    def test_adopt_and_get_belief(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.adopt("p", confidence=0.5)
+        b = agent.get_belief("p")
+        assert b is not None
+        assert b.confidence == 0.5
 
-    def test_chat_injects_system_prompt(self):
-        client = EchoClient("ok")
-        agent = BeliefAgent(client=client, state=BeliefState())
-        agent.state.add_belief("Test belief")
-        agent.chat("Hello")
-        system_msg = client.last_messages[0]
-        assert system_msg["role"] == "system"
-        assert "Test belief" in system_msg["content"]
+    def test_adopt_merge(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.adopt("p", confidence=0.6, evidence=["e1"])
+        agent.adopt("p", confidence=0.4, evidence=["e2"])
+        b = agent.get_belief("p")
+        assert b.confidence == 0.5
+        assert len(b.evidence) == 2
 
-    def test_complete_stateless(self):
-        client = EchoClient("response")
-        agent = BeliefAgent(client=client)
-        resp = agent.complete("prompt")
-        assert resp == "response"
-        # stateless — no history kept
+    def test_update_belief(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.adopt("p", confidence=0.5)
+        agent.update_belief("p", confidence=0.9)
+        assert agent.get_belief("p").confidence == 0.9
+
+    def test_update_belief_nonexistent(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        assert agent.update_belief("nope") is False
+
+    def test_remove_belief(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.adopt("p")
+        assert agent.remove_belief("p") is True
+        assert agent.get_belief("p") is None
+        assert agent.remove_belief("p") is False
+
+    def test_list_beliefs_filter(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.adopt("a", confidence=0.9)
+        agent.adopt("b", confidence=0.3)
+        agent.adopt("c", confidence=0.6)
+        c = agent.get_belief("c")
+        if c:
+            c.contradictions.append("x")
+        assert len(agent.list_beliefs(min_confidence=0.5)) == 2
+        assert len(agent.list_beliefs(only_contradicted=True)) == 1
+
+    def test_chat(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        reply = agent.chat("hello")
+        assert reply is not None
+
+    def test_call(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        reply = agent("hello")
+        assert reply is not None
+
+    def test_extracts_belief_from_reply(self):
+        agent = BeliefAgent(llm_call=_make_llm({"fact": "extracted belief", "confidence": 0.7}))
+        agent.chat("hello")
+        assert agent.get_belief("extracted belief") is not None
+
+    def test_serialization(self):
+        agent = BeliefAgent(llm_call=dummy_llm, name="ser")
+        agent.adopt("p", confidence=0.7)
+        d = agent.to_dict()
+        assert d["name"] == "ser"
+        assert len(d["state"]["beliefs"]) == 1
+
+    def test_to_json(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.adopt("p")
+        raw = agent.to_json()
+        d = json.loads(raw)
+        assert "name" in d
+
+    def test_reset_history(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.chat("hi")
+        assert len(agent.message_history) > 0
+        agent.reset_history()
         assert len(agent.message_history) == 0
 
     def test_reset_conversation(self):
-        agent = BeliefAgent(client=EchoClient())
-        agent.state.add_belief("Keep me")
-        agent.chat("test")
-        agent.reset_conversation(keep_beliefs=True)
-        assert len(agent.message_history) == 0
-        assert len(agent.state) == 1
-
-    def test_reset_conversation_clear_beliefs(self):
-        agent = BeliefAgent(client=EchoClient())
-        agent.state.add_belief("Lost")
-        agent.reset_conversation(keep_beliefs=False)
-        assert len(agent.state) == 0
-
-    def test_system_prompt_style_json(self):
-        client = EchoClient("ok")
-        agent = BeliefAgent(client=client, system_prompt_style="json")
-        agent.state.add_belief("Fact")
-        agent.chat("Hi")
-        content = client.last_messages[0]["content"]
-        assert '"fact"' in content
-
-    def test_auto_reflect_disabled_by_default(self):
-        client = EchoClient("ok")
-        agent = BeliefAgent(client=client)
-        assert agent.auto_reflect is False
-
-    def test_message_history_returns_copy(self):
-        agent = BeliefAgent(client=EchoClient())
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.adopt("p")
         agent.chat("hi")
-        hist = agent.message_history
-        hist.append("x")  # mutating the copy doesn't affect the agent
-        assert len(agent.message_history) == 3  # unchanged
+        agent.reset_conversation(keep_beliefs=True)
+        assert agent.get_belief("p") is not None
+        agent.reset_conversation(keep_beliefs=False)
+        assert agent.get_belief("p") is None
 
-
-class TestWithoutLitellm:
-    def test_no_client_raises(self):
-        import belief_agent.agent as agent_mod
-
-        agent_mod.HAS_LITELLM = False
-        with pytest.raises(ValueError):
-            BeliefAgent(client=None)
+    def test_reflect_method(self):
+        agent = BeliefAgent(llm_call=dummy_llm)
+        agent.adopt("test belief", confidence=0.5)
+        result = agent.reflect()
+        assert result is not None

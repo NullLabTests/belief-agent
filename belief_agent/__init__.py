@@ -1,27 +1,26 @@
-"""belief-agent: explicit belief states, structured reflection, and human
-negotiation for LLM agents.
-
-Exports
--------
-Belief, BeliefState
-    Core data model for storing structured beliefs.
-BeliefAgent, LLMClient, LiteLLMClient
-    Agent wrapper that injects beliefs into LLM conversations.
-reflect
-    Analyze LLM output against current beliefs and propose updates.
-negotiate_goals, score_tradeoffs, propose_compromise
-    Multi-objective negotiation helpers.
-build_system_prompt, format_beliefs_bullet_points, format_beliefs_json,
-format_beliefs_natural
-    Utilities for formatting beliefs into prompts.
-"""
-
 from __future__ import annotations
 
 from .agent import BeliefAgent, LLMClient, LiteLLMClient
 from .belief_state import Belief, BeliefState
-from .negotiation import negotiate_goals, propose_compromise, score_tradeoffs
-from .reflection import reflect
+from .negotiation import (
+    Goal,
+    NegotiationProposal,
+    NegotiationResult,
+    find_tradeoffs,
+    negotiate,
+    negotiate_goals,
+    propose_compromise,
+    rank_goals,
+    score_tradeoffs,
+    suggest_compromise,
+)
+from .reflection import (
+    ReflectionResult,
+    auto_update,
+    human_review,
+    reflect,
+    reflect_on_beliefs,
+)
 from .utils import (
     build_system_prompt,
     format_beliefs_bullet_points,
@@ -35,14 +34,25 @@ __all__ = [
     "BeliefAgent",
     "LLMClient",
     "LiteLLMClient",
+    "Goal",
+    "NegotiationProposal",
+    "NegotiationResult",
+    "ReflectionResult",
     "reflect",
+    "reflect_on_beliefs",
+    "auto_update",
+    "human_review",
+    "negotiate",
     "negotiate_goals",
-    "score_tradeoffs",
+    "rank_goals",
+    "find_tradeoffs",
+    "suggest_compromise",
     "propose_compromise",
+    "score_tradeoffs",
     "build_system_prompt",
     "format_beliefs_bullet_points",
     "format_beliefs_json",
     "format_beliefs_natural",
 ]
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"

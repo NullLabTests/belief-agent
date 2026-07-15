@@ -2,19 +2,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
 
 class Belief(BaseModel):
-    """A single belief held by the agent.
-
-    Each belief stores a factual claim along with metadata about its
-    origin, certainty, and relationship to other beliefs.
-    """
-
     fact: str = Field(..., description="The belief statement")
     confidence: float = Field(
         default=0.5,
@@ -26,7 +20,7 @@ class Belief(BaseModel):
     )
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
-        description="ISO-8601 timestamp of when this belief was added/updated",
+        description="ISO-8601 timestamp",
     )
     assumptions: list[str] = Field(
         default_factory=list,
@@ -34,7 +28,11 @@ class Belief(BaseModel):
     )
     contradictions: list[str] = Field(
         default_factory=list,
-        description="Facts that this belief explicitly contradicts",
+        description="IDs of beliefs that this belief contradicts",
+    )
+    evidence: list[str] = Field(
+        default_factory=list,
+        description="Supporting evidence items",
     )
     tags: list[str] = Field(
         default_factory=list,
@@ -65,19 +63,15 @@ class Belief(BaseModel):
         )
 
 
+_NEGATION_PATTERNS = ("not ", "no ", "never ", "without ", "isn't ", "aren't ", "don't ", "doesn't ")
+_OPPOSITES = [("true", "false"), ("yes", "no"), ("on", "off"), ("enable", "disable")]
+
+
 class BeliefState(BaseModel):
-    """Container for a collection of :class:`Belief` objects.
+    beliefs: list[Belief] = Field(default_factory=list)
+    version: int = Field(default=1)
 
-    Provides add / update / query / merge operations and automated
-    contradiction detection.
-    """
-
-    beliefs: list[Belief] = Field(default_factory=list, description="All stored beliefs")
-    version: int = Field(default=1, description="Monotonic version counter (bumped on every mutation)")
-
-    # ------------------------------------------------------------------
-    # Add / update
-    # ------------------------------------------------------------------
+    # ---- add / update / remove ----
 
     def add_belief(
         self,
@@ -86,42 +80,16 @@ class BeliefState(BaseModel):
         source: str = "user",
         assumptions: list[str] | None = None,
         tags: list[str] | None = None,
+        evidence: list[str] | None = None,
         detect_contradictions: bool = True,
     ) -> Belief:
-        """Add a new belief.
-
-        Parameters
-        ----------
-        fact:
-            The belief statement.
-        confidence:
-            How certain the agent is (0-1).
-        source:
-            Origin of the belief.
-        assumptions:
-            Conditional assumptions this belief depends on.
-        tags:
-            Optional tags for grouping.
-        detect_contradictions:
-            If True, automatically scan existing beliefs for contradictions.
-
-        Returns
-        -------
-        The newly created :class:`Belief`.
-
-        Examples
-        --------
-        >>> bs = BeliefState()
-        >>> b = bs.add_belief("The sky is blue", confidence=0.9, source="observation")
-        >>> b.fact
-        'The sky is blue'
-        """
         b = Belief(
             fact=fact,
             confidence=confidence,
             source=source,
             assumptions=assumptions or [],
             tags=tags or [],
+            evidence=evidence or [],
         )
         if detect_contradictions:
             self._detect_contradictions_for(b)
@@ -137,16 +105,9 @@ class BeliefState(BaseModel):
         source: str | None = None,
         assumptions: list[str] | None = None,
         tags: list[str] | None = None,
+        evidence: list[str] | None = None,
         detect_contradictions: bool = True,
     ) -> Belief | None:
-        """Update an existing belief by ID.
-
-        Only the fields provided are changed; ``None`` fields are left untouched.
-
-        Returns
-        -------
-        The updated :class:`Belief`, or ``None`` if no belief matched *belief_id*.
-        """
         for b in self.beliefs:
             if b.id == belief_id:
                 if fact is not None:
@@ -159,6 +120,8 @@ class BeliefState(BaseModel):
                     b.assumptions = assumptions
                 if tags is not None:
                     b.tags = tags
+                if evidence is not None:
+                    b.evidence = evidence
                 b.timestamp = datetime.now(timezone.utc).isoformat()
                 if detect_contradictions:
                     self._detect_contradictions_for(b)
@@ -167,12 +130,6 @@ class BeliefState(BaseModel):
         return None
 
     def remove_belief(self, belief_id: str) -> bool:
-        """Remove a belief by ID.
-
-        Returns
-        -------
-        True if a belief was removed, False otherwise.
-        """
         before = len(self.beliefs)
         self.beliefs = [b for b in self.beliefs if b.id != belief_id]
         removed = len(self.beliefs) < before
@@ -180,53 +137,80 @@ class BeliefState(BaseModel):
             self.version += 1
         return removed
 
-    # ------------------------------------------------------------------
-    # Query
-    # ------------------------------------------------------------------
+    # ---- support / contradict ----
+
+    def support(self, fact: str, evidence_item: str, delta: float = 0.1) -> Belief | None:
+        matches = self.query(fact)
+        if not matches:
+            return None
+        for b in matches:
+            if evidence_item not in b.evidence:
+                b.evidence.append(evidence_item)
+            b.confidence = min(1.0, b.confidence + delta)
+            b.timestamp = datetime.now(timezone.utc).isoformat()
+        self.version += 1
+        return matches[0]
+
+    def contradict(self, fact: str, statement: str) -> Belief | None:
+        matches = self.query(fact)
+        if not matches:
+            return None
+        for b in matches:
+            if statement not in b.contradictions:
+                b.contradictions.append(statement)
+            b.confidence *= 0.5
+            b.timestamp = datetime.now(timezone.utc).isoformat()
+        self.version += 1
+        return matches[0]
+
+    # ---- query ----
 
     def query(self, text: str, case_sensitive: bool = False) -> list[Belief]:
-        """Return all beliefs whose fact contains *text*.
-
-        Performs substring matching.
-        """
         if case_sensitive:
             return [b for b in self.beliefs if text in b.fact]
         text_lower = text.lower()
         return [b for b in self.beliefs if text_lower in b.fact.lower()]
 
     def query_by_tag(self, tag: str) -> list[Belief]:
-        """Return all beliefs tagged with *tag*."""
         return [b for b in self.beliefs if tag in b.tags]
 
     def query_by_source(self, source: str) -> list[Belief]:
-        """Return all beliefs from a given source."""
         return [b for b in self.beliefs if b.source == source]
 
     def get_all(self) -> list[Belief]:
-        """Return a shallow copy of all beliefs."""
         return list(self.beliefs)
 
     def get(self, belief_id: str) -> Belief | None:
-        """Retrieve a single belief by ID."""
         for b in self.beliefs:
             if b.id == belief_id:
                 return b
         return None
 
+    def list_beliefs(self, min_confidence: float = 0.0, only_contradicted: bool = False) -> list[Belief]:
+        result = list(self.beliefs)
+        if only_contradicted:
+            result = [b for b in result if b.contradictions]
+        if min_confidence > 0.0:
+            result = [b for b in result if b.confidence >= min_confidence]
+        return result
+
     def high_confidence(self, threshold: float = 0.8) -> list[Belief]:
-        """Return beliefs with confidence >= *threshold*."""
         return [b for b in self.beliefs if b.confidence >= threshold]
 
     def low_confidence(self, threshold: float = 0.3) -> list[Belief]:
-        """Return beliefs with confidence <= *threshold*."""
         return [b for b in self.beliefs if b.confidence <= threshold]
 
-    # ------------------------------------------------------------------
-    # Contradictions
-    # ------------------------------------------------------------------
+    def is_confident(self, fact: str, threshold: float = 0.7) -> bool:
+        matches = self.query(fact)
+        return bool(matches) and matches[0].confidence >= threshold
+
+    def is_contradicted(self, fact: str) -> bool:
+        matches = self.query(fact)
+        return bool(matches) and len(matches[0].contradictions) > 0
+
+    # ---- contradictions ----
 
     def get_contradictions(self) -> list[tuple[Belief, Belief]]:
-        """Return all pairs of beliefs that list each other as contradictions."""
         pairs: list[tuple[Belief, Belief]] = []
         for i, a in enumerate(self.beliefs):
             for b in self.beliefs[i + 1:]:
@@ -235,7 +219,6 @@ class BeliefState(BaseModel):
         return pairs
 
     def _detect_contradictions_for(self, belief: Belief) -> None:
-        """Scan every existing belief and cross-link contradictions."""
         for other in self.beliefs:
             if other.id == belief.id:
                 continue
@@ -247,28 +230,15 @@ class BeliefState(BaseModel):
 
     @staticmethod
     def _texts_contradict(a: str, b: str) -> bool:
-        """Cheap heuristic: treat negated statements as contradictions.
-
-        For example ``"The sky is blue"`` and ``"The sky is not blue"`` will
-        be flagged.  This is deliberately simple; a production system should
-        use an LLM-based judge for semantic contradiction detection.
-        """
         a_lower = a.lower().strip().rstrip(".").lstrip(".")
         b_lower = b.lower().strip().rstrip(".").lstrip(".")
-
-        # If both statements match exactly, they are not contradictory
         if a_lower == b_lower:
             return False
 
-        # Check if stripping a negation word from one yields the other
-        negation_patterns = ("not ", "no ", "never ", "without ", "isn't ", "aren't ", "don't ", "doesn't ")
-
         def _remove_negation(text: str) -> str | None:
-            """If *text* contains a negation word, return the text without it."""
-            for pat in negation_patterns:
+            for pat in _NEGATION_PATTERNS:
                 if pat in text:
                     candidate = text.replace(pat, "").strip()
-                    # Collapse repeated spaces
                     while "  " in candidate:
                         candidate = candidate.replace("  ", " ")
                     return candidate
@@ -276,90 +246,67 @@ class BeliefState(BaseModel):
 
         cleaned_a = _remove_negation(a_lower)
         cleaned_b = _remove_negation(b_lower)
-
         if cleaned_a is not None and cleaned_a == b_lower:
             return True
         if cleaned_b is not None and cleaned_b == a_lower:
             return True
-
-        # Opposite claims
-        opposites = [("true", "false"), ("yes", "no"), ("on", "off"), ("enable", "disable")]
-        for x, y in opposites:
+        for x, y in _OPPOSITES:
             if x in a_lower and y in b_lower:
                 return True
-
         return False
 
-    # ------------------------------------------------------------------
-    # Merge
-    # ------------------------------------------------------------------
+    # ---- merge ----
 
     def merge(self, other: BeliefState) -> int:
-        """Merge another ``BeliefState`` into this one.
-
-        Duplicate beliefs (same fact and source) are skipped unless they have
-        higher confidence — in which case the existing belief is updated.
-
-        Parameters
-        ----------
-        other:
-            Another belief state to merge in.
-
-        Returns
-        -------
-        Number of new beliefs added.
-        """
         added = 0
         for incoming in other.beliefs:
             match = self._find_match(incoming)
             if match is None:
                 self.beliefs.append(incoming.model_copy(deep=True))
                 added += 1
-            elif incoming.confidence > match.confidence:
-                match.confidence = incoming.confidence
-                match.source = incoming.source
+            else:
+                match.confidence = (match.confidence + incoming.confidence) / 2.0
+                for e in incoming.evidence:
+                    if e not in match.evidence:
+                        match.evidence.append(e)
+                for c in incoming.contradictions:
+                    if c not in match.contradictions:
+                        match.contradictions.append(c)
                 match.timestamp = datetime.now(timezone.utc).isoformat()
-        self.version += 1
+        if added > 0:
+            self.version += 1
         return added
 
     def _find_match(self, belief: Belief) -> Belief | None:
-        """Return a belief that shares the same fact and source, or None."""
         for b in self.beliefs:
-            if b.fact.strip().lower() == belief.fact.strip().lower() and b.source == belief.source:
+            if b.fact.strip().lower() == belief.fact.strip().lower():
                 return b
         return None
 
-    # ------------------------------------------------------------------
-    # Serialization
-    # ------------------------------------------------------------------
+    # ---- serialization ----
 
     def to_dict(self) -> dict[str, Any]:
-        """Export state as a JSON-compatible dictionary."""
         return self.model_dump()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BeliefState:
-        """Build a ``BeliefState`` from a dictionary."""
         return cls.model_validate(data)
 
     def serialize(self, **kwargs: Any) -> str:
-        """Export state as a JSON string.
-
-        Parameters
-        ----------
-        **kwargs:
-            Passed through to ``json.dumps`` (e.g. ``indent=2``).
-        """
         return self.model_dump_json(**kwargs)
 
     @classmethod
     def deserialize(cls, raw: str) -> BeliefState:
-        """Parse a JSON string back into a ``BeliefState``."""
         return cls.model_validate(json.loads(raw))
 
-    # ------------------------------------------------------------------
-    # Convenience
-    # ------------------------------------------------------------------
+    def to_json(self, indent: int = 2) -> str:
+        return self.serialize(indent=indent)
+
+    @classmethod
+    def from_json(cls, raw: str) -> BeliefState:
+        return cls.deserialize(raw)
+
+    # ---- convenience ----
 
     def __len__(self) -> int:
         return len(self.beliefs)

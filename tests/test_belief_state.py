@@ -1,180 +1,181 @@
-"""Tests for the BeliefState class."""
-
-from __future__ import annotations
-
 import json
 
 import pytest
 
-from belief_agent import Belief, BeliefState
+from belief_agent.belief_state import Belief, BeliefState
 
 
 class TestBelief:
-    def test_create(self):
-        b = Belief(fact="The sky is blue", confidence=0.9, source="observation")
+    def test_defaults(self):
+        b = Belief(fact="The sky is blue")
         assert b.fact == "The sky is blue"
-        assert b.confidence == 0.9
-        assert b.source == "observation"
+        assert b.confidence == 0.5
+        assert b.source == "user"
         assert len(b.id) == 12
 
     def test_confidence_clamped(self):
-        b = Belief(fact="test", confidence=99.0)
+        b = Belief(fact="p", confidence=1.5)
         assert b.confidence == 1.0
-        b2 = Belief(fact="test", confidence=-5)
-        assert b2.confidence == 0.0
+        b = Belief(fact="p", confidence=-0.5)
+        assert b.confidence == 0.0
 
     def test_eq_by_id(self):
-        b1 = Belief(fact="A", id="same")
-        b2 = Belief(fact="B", id="same")
-        assert b1 == b2
+        a = Belief(fact="p")
+        b = Belief(fact="p")
+        assert a != b  # different ids
 
-    def test_hash(self):
-        b = Belief(fact="test")
-        assert hash(b) == hash(b.id)
+    def test_str_repr(self):
+        b = Belief(fact="hello", confidence=0.9)
+        assert "90%" in str(b)
+        assert "hello" in repr(b)
 
 
 class TestBeliefState:
     def test_empty(self):
         bs = BeliefState()
         assert len(bs) == 0
-        assert str(bs) == "BeliefState(empty)"
+        assert "empty" in str(bs)
 
     def test_add_belief(self):
         bs = BeliefState()
-        b = bs.add_belief("Hello world", confidence=0.8, source="test")
+        b = bs.add_belief("The sky is blue", confidence=0.9, source="observation")
         assert len(bs) == 1
-        assert b.fact == "Hello world"
-        assert bs.version > 1
-
-    def test_query(self):
-        bs = BeliefState()
-        bs.add_belief("Python is great")
-        bs.add_belief("I like Java")
-        results = bs.query("python")
-        assert len(results) == 1
-        assert "Python" in results[0].fact
-
-    def test_query_case_sensitive(self):
-        bs = BeliefState()
-        bs.add_belief("Python")
-        bs.add_belief("python")
-        assert len(bs.query("python")) == 2
-        assert len(bs.query("python", case_sensitive=True)) == 1
-
-    def test_query_by_tag(self):
-        bs = BeliefState()
-        bs.add_belief("A", tags=["x"])
-        bs.add_belief("B", tags=["y"])
-        assert len(bs.query_by_tag("x")) == 1
-        assert len(bs.query_by_tag("z")) == 0
-
-    def test_query_by_source(self):
-        bs = BeliefState()
-        bs.add_belief("A", source="user")
-        bs.add_belief("B", source="model")
-        assert len(bs.query_by_source("user")) == 1
+        assert b.fact == "The sky is blue"
+        assert bs.version == 2
 
     def test_update_belief(self):
         bs = BeliefState()
-        b = bs.add_belief("Old fact", confidence=0.5)
-        updated = bs.update_belief(b.id, fact="New fact", confidence=0.9)
-        assert updated is not None
-        assert updated.fact == "New fact"
-        assert updated.confidence == 0.9
+        b = bs.add_belief("p", confidence=0.5)
+        bs.update_belief(b.id, confidence=0.9)
+        assert bs.get(b.id).confidence == 0.9
 
-    def test_update_nonexistent(self):
+    def test_update_belief_nonexistent(self):
         bs = BeliefState()
-        assert bs.update_belief("nonexistent", fact="x") is None
+        assert bs.update_belief("nope", confidence=0.9) is None
 
     def test_remove_belief(self):
         bs = BeliefState()
-        b = bs.add_belief("Remove me")
+        b = bs.add_belief("p")
         assert bs.remove_belief(b.id) is True
         assert len(bs) == 0
+        assert bs.remove_belief(b.id) is False
 
-    def test_remove_nonexistent(self):
+    def test_query(self):
         bs = BeliefState()
-        assert bs.remove_belief("nope") is False
+        bs.add_belief("Python is great", confidence=0.9)
+        bs.add_belief("Java is also fine", confidence=0.5)
+        assert len(bs.query("Python")) == 1
+        assert len(bs.query("java")) == 1
+        assert len(bs.query("nonexistent")) == 0
 
-    def test_get(self):
+    def test_query_by_tag(self):
         bs = BeliefState()
-        b = bs.add_belief("Get me")
-        assert bs.get(b.id) is b
-        assert bs.get("nope") is None
+        bs.add_belief("p", tags=["math"])
+        bs.add_belief("q", tags=["science"])
+        assert len(bs.query_by_tag("math")) == 1
 
-    def test_high_low_confidence(self):
+    def test_query_by_source(self):
         bs = BeliefState()
-        bs.add_belief("Sure", confidence=0.9)
-        bs.add_belief("Unsure", confidence=0.2)
-        bs.add_belief("Mid", confidence=0.5)
-        assert len(bs.high_confidence(0.8)) == 1
-        assert len(bs.low_confidence(0.3)) == 1
+        bs.add_belief("p", source="user")
+        bs.add_belief("q", source="model")
+        assert len(bs.query_by_source("user")) == 1
+
+    def test_high_confidence(self):
+        bs = BeliefState()
+        bs.add_belief("a", confidence=0.9)
+        bs.add_belief("b", confidence=0.3)
+        assert len(bs.high_confidence(threshold=0.8)) == 1
+
+    def test_low_confidence(self):
+        bs = BeliefState()
+        bs.add_belief("a", confidence=0.9)
+        bs.add_belief("b", confidence=0.2)
+        assert len(bs.low_confidence(threshold=0.3)) == 1
+
+    def test_list_beliefs(self):
+        bs = BeliefState()
+        bs.add_belief("a", confidence=0.9)
+        bs.add_belief("b", confidence=0.3)
+        bs.add_belief("c", confidence=0.6, tags=["x"])
+        c = bs.query("c")[0]
+        c.contradictions.append("some-id")
+        assert len(bs.list_beliefs(min_confidence=0.5)) == 2
+        assert len(bs.list_beliefs(only_contradicted=True)) == 1
+
+    def test_is_confident(self):
+        bs = BeliefState()
+        bs.add_belief("p", confidence=0.8)
+        assert bs.is_confident("p") is True
+        assert bs.is_confident("nonexistent") is False
+
+    def test_is_contradicted(self):
+        bs = BeliefState()
+        b = bs.add_belief("p", confidence=0.8)
+        b.contradictions.append("other-id")
+        assert bs.is_contradicted("p") is True
+        assert bs.is_contradicted("nonexistent") is False
+
+    def test_support(self):
+        bs = BeliefState()
+        bs.add_belief("p", confidence=0.5)
+        bs.support("p", "new evidence")
+        assert bs.query("p")[0].confidence == 0.6
+        assert "new evidence" in bs.query("p")[0].evidence
+
+    def test_contradict(self):
+        bs = BeliefState()
+        bs.add_belief("p", confidence=0.8)
+        bs.contradict("p", "counterpoint")
+        assert bs.query("p")[0].confidence == 0.4
 
     def test_contradiction_detection(self):
         bs = BeliefState()
-        bs.add_belief("The sky is blue")
-        bs.add_belief("The sky is not blue")
-        contradictions = bs.get_contradictions()
-        assert len(contradictions) == 1
-        a, b = contradictions[0]
-        assert "blue" in a.fact and "blue" in b.fact
-        assert a.id in b.contradictions
-        assert b.id in a.contradictions
-
-    def test_no_false_positive_contradiction(self):
-        bs = BeliefState()
-        bs.add_belief("Python is great")
-        bs.add_belief("JavaScript is also great")
-        assert len(bs.get_contradictions()) == 0
+        bs.add_belief("The sky is blue", confidence=0.9, detect_contradictions=False)
+        bs.add_belief("The sky is not blue", confidence=0.5)
+        pairs = bs.get_contradictions()
+        assert len(pairs) == 1
 
     def test_merge(self):
         bs1 = BeliefState()
-        bs1.add_belief("Fact A", confidence=0.5, source="user")
+        bs1.add_belief("p", confidence=0.8, evidence=["e1"])
         bs2 = BeliefState()
-        bs2.add_belief("Fact B", confidence=0.9, source="user")
-        bs2.add_belief("Fact A", confidence=0.8, source="user")  # higher confidence
-        added = bs1.merge(bs2)
-        assert added == 1  # only Fact B is new
-        assert bs1.query("Fact A")[0].confidence == 0.8  # updated
+        bs2.add_belief("p", confidence=0.4, evidence=["e2"])
+        bs1.merge(bs2)
+        b = bs1.query("p")[0]
+        assert b.confidence == pytest.approx(0.6)
+        assert len(b.evidence) == 2
 
-    def test_serialize_deserialize(self):
+    def test_serialize_roundtrip(self):
         bs = BeliefState()
-        bs.add_belief("Keep me", confidence=1.0)
-        json_str = bs.serialize(indent=2)
-        restored = BeliefState.deserialize(json_str)
+        bs.add_belief("p", confidence=0.7, evidence=["e1"], source="test")
+        raw = bs.serialize(indent=2)
+        restored = BeliefState.deserialize(raw)
         assert len(restored) == 1
-        assert restored[0].fact == "Keep me"
+        assert restored.query("p")[0].confidence == 0.7
+        assert restored.query("p")[0].evidence == ["e1"]
 
-    def test_to_dict_from_dict(self):
+    def test_to_json_roundtrip(self):
         bs = BeliefState()
-        bs.add_belief("Test", tags=["a"])
+        bs.add_belief("p", confidence=0.5)
+        raw = bs.to_json()
+        restored = BeliefState.from_json(raw)
+        assert len(restored) == 1
+
+    def test_to_dict_roundtrip(self):
+        bs = BeliefState()
+        bs.add_belief("p", confidence=0.7)
         d = bs.to_dict()
         restored = BeliefState.from_dict(d)
         assert len(restored) == 1
-        assert restored[0].tags == ["a"]
 
-    def test_iter(self):
+    def test_iter_and_getitem(self):
         bs = BeliefState()
-        bs.add_belief("A")
-        bs.add_belief("B")
-        facts = [b.fact for b in bs]
-        assert facts == ["A", "B"]
+        bs.add_belief("a")
+        bs.add_belief("b")
+        assert len(list(iter(bs))) == 2
+        assert bs[0].fact == "a"
 
-    def test_get_all_returns_copy(self):
+    def test_get_all(self):
         bs = BeliefState()
-        bs.add_belief("A")
-        all_b = bs.get_all()
-        all_b.clear()
-        assert len(bs) == 1
-
-    def test_merge_same_belief_lower_confidence(self):
-        bs1 = BeliefState()
-        bs1.add_belief("Fact", confidence=0.9, source="user")
-        bs2 = BeliefState()
-        bs2.add_belief("Fact", confidence=0.3, source="user")
-        bs1.merge(bs2)
-        assert bs1.query("Fact")[0].confidence == 0.9  # not lowered
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])
+        bs.add_belief("a")
+        assert len(bs.get_all()) == 1

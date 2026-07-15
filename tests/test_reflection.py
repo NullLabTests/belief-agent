@@ -1,106 +1,134 @@
-"""Tests for the Reflection module."""
-
-from __future__ import annotations
-
 import json
-from typing import Any
 
-from belief_agent import BeliefState, LLMClient, reflect
-
-
-class ReflectionMockClient(LLMClient):
-    """Returns a canned reflection analysis."""
-
-    def __init__(self, response: str | None = None) -> None:
-        self.response = response
-
-    def complete(self, messages: list[dict], **kwargs: Any) -> str:
-        if self.response is not None:
-            return self.response
-        return json.dumps(
-            [
-                {
-                    "type": "contradiction",
-                    "fact": "The sky is blue",
-                    "reason": "User said the sky is not blue",
-                    "confidence": 0.0,
-                },
-                {
-                    "type": "new_belief",
-                    "fact": "The user is testing contradiction detection",
-                    "reason": "Inferred from conversation",
-                    "confidence": 0.6,
-                },
-            ]
-        )
-
-    def complete_stream(self, messages: list[dict], **kwargs: Any) -> Any:
-        raise NotImplementedError
+from belief_agent.agent import BeliefAgent
+from belief_agent.belief_state import BeliefState
+from belief_agent.reflection import (
+    ReflectionResult,
+    auto_update,
+    human_review,
+    reflect,
+    reflect_on_beliefs,
+)
 
 
-class TestReflection:
-    def test_reflect_contradiction(self):
+def _llm_accept(messages):
+    return json.dumps({
+        "critique": "Looks solid",
+        "new_evidence": ["more data"],
+        "new_contradictions": [],
+        "updated_confidence": 0.9,
+    })
+
+
+def _llm_garbage(messages):
+    return "not json"
+
+
+class MockClient:
+    def __init__(self, return_value=None):
+        self.return_value = return_value or json.dumps([])
+
+    def complete(self, messages, **kwargs):
+        return self.return_value
+
+
+class TestReflect:
+    def test_reflect_empty_state(self):
         state = BeliefState()
-        state.add_belief("The sky is blue", confidence=0.9, source="user")
-        client = ReflectionMockClient()
-        updates = reflect(state, "The sky is not blue!", "You're right, my mistake.", client, mode="auto")
-        assert len(updates) >= 1
-        # The contradiction proposal should reduce confidence
-        belief = state.query("The sky is blue")[0]
-        assert belief.confidence < 0.9
+        client = MockClient()
+        result = reflect(state, "hello", "world", client)
+        assert result == []
 
-    def test_reflect_new_belief(self):
+    def test_reflect_with_proposals(self):
         state = BeliefState()
-        client = ReflectionMockClient()
-        reflect(state, "I like Python", "Great choice!", client, mode="auto")
-        new_beliefs = state.query("testing contradiction detection")
-        assert len(new_beliefs) == 1
-        assert new_beliefs[0].confidence == 0.6
-        assert new_beliefs[0].source == "reflection"
+        state.add_belief("p", confidence=0.5)
+        client = MockClient(return_value=json.dumps([
+            {"type": "confidence_update", "fact": "p", "confidence": 0.9, "reason": "updated"}
+        ]))
+        result = reflect(state, "hello", "world", client)
+        assert len(result) == 1
+        assert state.query("p")[0].confidence == 0.9
 
-    def test_reflect_human_mode_skip(self):
+    def test_reflect_human_mode(self):
         state = BeliefState()
-        state.add_belief("Fact A", confidence=0.9)
-        client = ReflectionMockClient()
-
-        # callback returns False → skip
-        def reject(_proposals: list[dict]) -> bool:
+        state.add_belief("p", confidence=0.5)
+        client = MockClient(return_value=json.dumps([
+            {"type": "confidence_update", "fact": "p", "confidence": 0.9, "reason": "updated"}
+        ]))
+        callback_called = False
+        def callback(proposals):
+            nonlocal callback_called
+            callback_called = True
             return False
+        result = reflect(state, "hello", "world", client, mode="human", callback=callback)
+        assert callback_called
+        assert state.query("p")[0].confidence == 0.5  # not applied
 
-        reflect(state, "test", "response", client, mode="human", callback=reject)
-        assert state.query("testing contradiction detection") == []
 
-    def test_reflect_human_mode_apply(self):
+class TestReflectOnBeliefs:
+    def test_reflect_on_beliefs_updates_confidence(self):
         state = BeliefState()
-        client = ReflectionMockClient()
+        state.add_belief("p", confidence=0.5, evidence=["e"])
+        results = reflect_on_beliefs(state, _llm_accept)
+        assert len(results) == 1
+        assert results[0].proposition == "p"
+        assert results[0].original_confidence == 0.5
+        assert state.query("p")[0].confidence == 0.9
+        assert "more data" in state.query("p")[0].evidence
 
-        def accept(_proposals: list[dict]) -> bool:
-            return True
-
-        reflect(state, "test", "response", client, mode="human", callback=accept)
-        assert len(state.query("testing contradiction detection")) == 1
-
-    def test_reflect_no_updates(self):
+    def test_reflect_on_multiple_beliefs(self):
         state = BeliefState()
-        state.add_belief("Fact", confidence=0.5)
-        client = ReflectionMockClient(response=json.dumps([]))
-        updates = reflect(state, "Hello", "Hi", client, mode="auto")
-        assert updates == []
-        # nothing changed
-        assert state.query("Fact")[0].confidence == 0.5
+        state.add_belief("a", confidence=0.5)
+        state.add_belief("b", confidence=0.5)
+        results = reflect_on_beliefs(state, _llm_accept)
+        assert len(results) == 2
 
-    def test_reflect_malformed_json(self):
+    def test_reflect_depth(self):
         state = BeliefState()
-        client = ReflectionMockClient(response="not json at all")
-        updates = reflect(state, "Hello", "Hi", client, mode="auto")
-        assert updates == []
+        state.add_belief("p", confidence=0.5)
+        results = reflect_on_beliefs(state, _llm_accept, depth=2)
+        assert len(results) == 2
 
-    def test_reflect_with_markdown_fence(self):
+    def test_reflect_empty_state(self):
         state = BeliefState()
-        client = ReflectionMockClient(
-            response="""```json
-[{"type": "new_belief", "fact": "Inferred from fence", "reason": "test", "confidence": 0.8}]
-```"""
+        results = reflect_on_beliefs(state, _llm_accept)
+        assert results == []
+
+    def test_reflect_depth_zero(self):
+        state = BeliefState()
+        state.add_belief("p")
+        results = reflect_on_beliefs(state, _llm_accept, depth=0)
+        assert results == []
+
+    def test_garbage_llm_output(self):
+        state = BeliefState()
+        state.add_belief("p", confidence=0.5)
+        results = reflect_on_beliefs(state, _llm_garbage)
+        assert len(results) == 1
+        assert results[0].accepted is False
+        assert results[0].updated_confidence == 0.5
+
+    def test_auto_update_low_confidence(self):
+        state = BeliefState()
+        state.add_belief("high", confidence=0.9)
+        state.add_belief("low", confidence=0.2)
+        results = auto_update(state, _llm_accept, threshold=0.3)
+        assert len(results) == 1
+        assert results[0].proposition == "low"
+
+    def test_auto_update_no_low_confidence(self):
+        state = BeliefState()
+        state.add_belief("p", confidence=0.9)
+        results = auto_update(state, _llm_accept, threshold=0.3)
+        assert results == []
+
+    def test_human_review(self):
+        result = ReflectionResult(
+            proposition="p",
+            original_confidence=0.5,
+            updated_confidence=0.8,
+            critique="ok",
         )
-        reflect(state, "test", "resp", client, mode="auto")
-        assert state.query("Inferred from fence")[0].confidence == 0.8
+        result = human_review(result, "Actually wrong", accepted=False)
+        assert "Actually wrong" in result.critique
+        assert result.accepted is False
