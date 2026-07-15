@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "belief-agent"
+version = "0.1.0"
+description = "Explicit belief states, structured reflection, and human negotiation for LLM agents"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "nulllab", email = "team@nulllab.ai"},
+]
+keywords = ["llm", "agent", "belief", "reflection", "negotiation", "ai-safety"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.0",
+]
+optional-dependencies = {litellm = ["litellm>=1.0"]}
+
+[project.urls]
+Homepage = "https://github.com/nulllabtests/belief-agent"
+Repository = "https://github.com/nulllabtests/belief-agent"
+Issues = "https://github.com/nulllabtests/belief-agent/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["belief_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["belief_agent"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 70
